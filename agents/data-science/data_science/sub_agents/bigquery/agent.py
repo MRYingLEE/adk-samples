@@ -33,6 +33,9 @@ def setup_before_agent_call(callback_context: CallbackContext) -> None:
     if "database_settings" not in callback_context.state:
         callback_context.state["database_settings"] = \
             tools.get_database_settings()
+            
+    # Check for Schema RAG availability and update agent state
+    tools.check_schema_rag_availability(callback_context)
 
 
 database_agent = Agent(
@@ -46,6 +49,8 @@ database_agent = Agent(
             else tools.initial_bq_nl2sql
         ),
         tools.run_bigquery_validation,
+        tools.get_schema_rag_context,  # Add Schema RAG context retrieval tool
+        tools.check_schema_rag_availability,  # Add Schema RAG availability check tool
     ],
     before_agent_callback=setup_before_agent_call,
     generate_content_config=types.GenerateContentConfig(temperature=0.01),

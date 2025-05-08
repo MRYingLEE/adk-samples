@@ -30,10 +30,20 @@ def return_instructions_bigquery() -> str:
         db_tool_name = None
         raise ValueError(f"Unknown NL2SQL method: {NL2SQL_METHOD}")
 
+    schema_rag_available = os.getenv("SCHEMA_RAG_CORPUS_NAME") is not None
+    schema_rag_instructions = """
+      Additional tools for large datasets:
+      - When dealing with large datasets (hundreds of tables, thousands of columns), you have access to Schema RAG tools:
+        - check_schema_rag_availability: Check if Schema RAG is configured and available
+        - get_schema_rag_context: Retrieve only the schema information relevant to a specific query
+      
+      Schema RAG will automatically be used when available during SQL generation. For complex queries where the default schema context might be insufficient, you can explicitly retrieve more focused schema information using the get_schema_rag_context tool.
+      """ if schema_rag_available else ""
+
     instruction_prompt_bqml_v1 = f"""
       You are an AI assistant serving as a SQL expert for BigQuery.
       Your job is to help users generate SQL answers from natural language questions (inside Nl2sqlInput).
-      You should proeuce the result as NL2SQLOutput.
+      You should produce the result as NL2SQLOutput.
 
       Use the provided tools to help generate the most accurate SQL:
       1. First, use {db_tool_name} tool to generate initial SQL from the question.
@@ -43,6 +53,7 @@ def return_instructions_bigquery() -> str:
           "sql": "Output your generated SQL!",
           "sql_results": "raw sql execution query_result from run_bigquery_validation if it's available, otherwise None",
           "nl_results": "Natural language about results, otherwise it's None if generated SQL is invalid"
+      {schema_rag_instructions}
       ```
       You should pass one tool call to another tool call as needed!
 

@@ -20,6 +20,7 @@ import os
 import re
 
 from data_science.utils.utils import get_env_var
+from data_science.utils.schema_rag import retrieve_schema_context
 from google.adk.tools import ToolContext
 from google.cloud import bigquery
 from google.genai import Client
@@ -152,6 +153,27 @@ def initial_bq_nl2sql(
         str: An SQL statement to answer this question.
     """
 
+    # Check if Schema RAG is available
+    schema_rag_available = os.getenv("SCHEMA_RAG_CORPUS_NAME") is not None
+    
+    # If Schema RAG is available, retrieve relevant schema context
+    schema_context = ""
+    if schema_rag_available:
+        try:
+            schema_context = retrieve_schema_context(question)
+            tool_context.state["schema_rag_context"] = schema_context
+            # Only keep the full schema information if schema RAG failed or returned empty results
+            if schema_context and "Relevant Schema Information:" in schema_context:
+                # We have relevant schema context from RAG, use this instead of full schema
+                use_full_schema = False
+            else:
+                use_full_schema = True
+        except Exception as e:
+            print(f"Error using Schema RAG: {str(e)}")
+            use_full_schema = True
+    else:
+        use_full_schema = True
+
     prompt_template = """
 You are a BigQuery SQL expert tasked with answering user's questions about BigQuery tables by generating SQL queries in the GoogleSql dialect.  Your task is to write a Bigquery SQL query that answers the following question while using the provided context.
 
@@ -162,16 +184,10 @@ You are a BigQuery SQL expert tasked with answering user's questions about BigQu
 - **Aggregations:**  Use all non-aggregated columns from the `SELECT` statement in the `GROUP BY` clause.
 - **SQL Syntax:** Return syntactically and semantically correct SQL for BigQuery with proper relation mapping (i.e., project_id, owner, table, and column relation). Use SQL `AS` statement to assign a new name temporarily to a table column or even a table wherever needed. Always enclose subqueries and union queries in parentheses.
 - **Column Usage:** Use *ONLY* the column names (column_name) mentioned in the Table Schema. Do *NOT* use any other column names. Associate `column_name` mentioned in the Table Schema only to the `table_name` specified under Table Schema.
-- **FILTERS:** You should write query effectively  to reduce and minimize the total rows to be returned. For example, you can use filters (like `WHERE`, `HAVING`, etc. (like 'COUNT', 'SUM', etc.) in the SQL query.
+- **FILTERS:** You should write query effectively to reduce and minimize the total rows to be returned. For example, you can use filters (like `WHERE`, `HAVING`, etc. (like 'COUNT', 'SUM', etc.) in the SQL query.
 - **LIMIT ROWS:**  The maximum number of rows returned should be less than {MAX_NUM_ROWS}.
 
-**Schema:**
-
-The database structure is defined by the following table schemas (possibly with sample rows):
-
-```
-{SCHEMA}
-```
+{SCHEMA_SECTION}
 
 **Natural language question:**
 
@@ -183,10 +199,30 @@ The database structure is defined by the following table schemas (possibly with 
 
    """
 
-    ddl_schema = tool_context.state["database_settings"]["bq_ddl_schema"]
+    if use_full_schema:
+        # Use full schema information (traditional approach)
+        ddl_schema = tool_context.state["database_settings"]["bq_ddl_schema"]
+        schema_section = f"""**Schema:**
+
+The database structure is defined by the following table schemas (possibly with sample rows):
+
+```
+{ddl_schema}
+```"""
+    else:
+        # Use the retrieved schema context from RAG
+        schema_section = f"""**Relevant Schema Information:**
+
+I've analyzed your query and determined the most relevant schema information:
+
+```
+{schema_context}
+```"""
 
     prompt = prompt_template.format(
-        MAX_NUM_ROWS=MAX_NUM_ROWS, SCHEMA=ddl_schema, QUESTION=question
+        MAX_NUM_ROWS=MAX_NUM_ROWS, 
+        SCHEMA_SECTION=schema_section,
+        QUESTION=question
     )
 
     response = llm_client.models.generate_content(
@@ -311,3 +347,55 @@ def run_bigquery_validation(
     print("\n run_bigquery_validation final_result: \n", final_result)
 
     return final_result
+
+
+def get_schema_rag_context(query: str, tool_context: ToolContext) -> str:
+    """Retrieves relevant schema context for a query using Schema RAG.
+    
+    This function uses the Schema RAG system to retrieve schema information
+    most relevant to the user's query. This is especially useful for large
+    datasets with hundreds of tables and thousands of columns.
+    
+    Args:
+        query: The natural language query to retrieve schema context for.
+        tool_context: The tool context for state management.
+        
+    Returns:
+        str: A formatted string containing the relevant schema information.
+    """
+    try:
+        # Use the schema RAG module to retrieve relevant context
+        schema_context = retrieve_schema_context(query)
+        
+        # Store the retrieved schema context in the tool context state
+        tool_context.state["schema_rag_context"] = schema_context
+        
+        return schema_context
+    except Exception as e:
+        error_message = f"Error retrieving schema context: {str(e)}"
+        print(error_message)
+        return error_message
+
+
+def check_schema_rag_availability(tool_context: ToolContext) -> str:
+    """Checks if Schema RAG is configured and available.
+    
+    Args:
+        tool_context: The tool context for state management.
+        
+    Returns:
+        str: A status message indicating if Schema RAG is available.
+    """
+    schema_corpus_name = os.getenv("SCHEMA_RAG_CORPUS_NAME")
+    
+    if schema_corpus_name:
+        status = "Schema RAG is available and configured."
+        # Store availability status in the tool context state
+        tool_context.state["schema_rag_available"] = True
+    else:
+        status = ("Schema RAG is not configured. For large datasets, consider setting up "
+                 "Schema RAG using the setup_schema_rag() function in data_science/utils/schema_rag.py")
+        # Store availability status in the tool context state
+        tool_context.state["schema_rag_available"] = False
+    
+    return status

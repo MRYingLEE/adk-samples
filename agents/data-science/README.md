@@ -378,3 +378,45 @@ python3 deployment/deploy.py --delete --resource_id=RESOURCE_ID
 *   If you see errors in the SQL generated, try the following:
     - including clear descriptions in your tables and columns help boost performance
     - if your database is large, try setting up a RAG pipeline for schema linking by storing your table schema details in a vector store
+
+## Using Schema RAG for Large Datasets
+
+For databases with hundreds of tables and thousands of columns, providing the complete schema as context during chat is impractical. The Schema RAG (Retrieval-Augmented Generation) feature allows you to:
+
+1. Extract schema metadata from your large database
+2. Create embeddings and store them in a vector database
+3. During query time, retrieve only the relevant schema information
+
+### Setting up Schema RAG
+
+1. Make sure your environment is set up correctly with `BQ_PROJECT_ID` and other variables.
+
+2. Run the Schema RAG setup script:
+
+   ```bash
+   python -c "from data_science.utils.schema_rag import setup_schema_rag; \
+   import os; \
+   setup_schema_rag(os.getenv('BQ_PROJECT_ID'), 'your_large_dataset_id')"
+   ```
+
+   You can also run the `schema_rag.py` script directly after modifying the dataset ID:
+
+   ```bash
+   python data_science/utils/schema_rag.py
+   ```
+
+### How It Works
+
+1. **Setup time**: The script extracts schema metadata from all tables in your dataset, creates embeddings, and stores them in a RAG corpus.
+
+2. **Chat time**: When you ask a database question, the system:
+   - Uses semantic search to find schema information most relevant to your query
+   - Provides only the relevant tables and columns as context to the SQL generation model
+   - Generates more accurate SQL using the focused schema information
+
+3. **Benefits**:
+   - Handles much larger schemas than would fit in context windows
+   - Improves SQL accuracy by focusing on relevant schema parts
+   - Reduces latency by processing smaller schema contexts
+
+The Schema RAG feature is automatically used when available, with no changes required to your queries or workflow.
