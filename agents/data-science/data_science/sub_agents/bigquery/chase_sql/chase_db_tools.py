@@ -24,6 +24,7 @@ from .dc_prompt_template import DC_PROMPT_TEMPLATE
 from .llm_utils import GeminiModel
 from .qp_prompt_template import QP_PROMPT_TEMPLATE
 from .sql_postprocessor import sql_translator
+from ..tools import get_bigquery_schema
 
 # pylint: enable=g-importing-member
 
@@ -93,9 +94,33 @@ def initial_bq_nl2sql(
       str: An SQL statement to answer this question.
     """
     print("****** Running agent with ChaseSQL algorithm.")
-    ddl_schema = tool_context.state["database_settings"]["bq_ddl_schema"]
     project = tool_context.state["database_settings"]["bq_project_id"]
-    db = tool_context.state["database_settings"]["bq_dataset_id"]
+    dataset_ids_list = tool_context.state["database_settings"]["bq_dataset_ids"] # This is the list of data datasets
+    rag_db = tool_context.state["database_settings"].get("bq_rag_dataset_id") # Get RAG dataset from context
+
+    if not rag_db:
+        print("Warning: BQ_RAG_DATASET_ID not found in tool_context. ChaseSQL RAG features may be limited.")
+        # Fallback to using the main data dataset for RAG if not specified, or handle error
+        # For CHASE, RAG is preferred. If rag_db is not set, schema retrieval might be limited
+        # or fall back to a general schema dump if implemented that way in get_bigquery_schema.
+
+    # Retrieve schema based on the question using RAG or by listing schemas for all datasets
+    ddl_schema = get_bigquery_schema(
+        project_id=project,
+        question=question,
+        rag_corpus_id=rag_db, # RAG corpus for embeddings lookup
+        target_dataset_ids=dataset_ids_list # Pass the list of dataset IDs
+    )
+    if not ddl_schema:
+        # Fallback or error handling if schema retrieval fails
+        print("Warning: RAG schema retrieval failed. Falling back to full schema or predefined DDL.")
+        # Optionally, load a default or full schema here if RAG fails
+        # For now, we'll rely on a possible pre-loaded full ddl_schema in tool_context if available,
+        # or handle the error if no schema can be provided.
+        ddl_schema = tool_context.state["database_settings"].get("bq_ddl_schema", "")
+        if not ddl_schema:
+            raise ValueError("Schema could not be retrieved, and no fallback DDL schema is available.")
+
     transpile_to_bigquery = tool_context.state["database_settings"][
         "transpile_to_bigquery"
     ]
@@ -141,7 +166,7 @@ def initial_bq_nl2sql(
         # pylint: disable=g-bad-todo
         # pylint: enable=g-bad-todo
         responses: str = translator.translate(
-            responses, ddl_schema=ddl_schema, db=db, catalog=project
+            responses, ddl_schema=ddl_schema, db=dataset_ids_list[0] if dataset_ids_list else None, catalog=project
         )
 
     return responses

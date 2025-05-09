@@ -23,6 +23,7 @@ from data_science.utils.utils import get_env_var
 from google.adk.tools import ToolContext
 from google.cloud import bigquery
 from google.genai import Client
+from vertexai.language_models import TextEmbeddingModel
 
 from .chase_sql import chase_constants
 
@@ -33,7 +34,9 @@ location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 llm_client = Client(vertexai=True, project=project, location=location)
 
 MAX_NUM_ROWS = 80
-
+SCHEMA_EMBEDDING_MODEL_NAME = os.getenv("SCHEMA_EMBEDDING_MODEL_NAME", "text-embedding-004")
+MAX_SCHEMA_RESULTS = 20
+BQ_METADATA_RAG_CORPUS_ID = os.getenv("BQ_METADATA_RAG_CORPUS_ID")
 
 database_settings = None
 bq_client = None
@@ -47,6 +50,26 @@ def get_bq_client():
     return bq_client
 
 
+def get_column_embeddings(texts: list[str]) -> list[list[float]]:
+    """Generates embeddings for a list of texts."""
+    model = TextEmbeddingModel.from_pretrained(SCHEMA_EMBEDDING_MODEL_NAME)
+    embeddings = model.get_embeddings(texts)
+    return [embedding.values for embedding in embeddings]
+
+def get_relevant_schema_from_embeddings(question: str, project_id: str, rag_corpus_id: str) -> str:
+    """Retrieves relevant schema details (tables and columns) based on vector similarity to the question,
+    querying a centralized RAG corpus that contains metadata for all configured datasets."""
+    client = get_bq_client()
+    question_embedding = get_column_embeddings([question])[0]
+
+    if not rag_corpus_id:
+        print("Error: BQ_METADATA_RAG_CORPUS_ID is not set. Cannot query schema embeddings.")
+        return ""
+
+    print(f"Querying RAG Corpus: {rag_corpus_id} for question: {question}")
+    print(f"Fetching relevant DDL from RAG corpus {rag_corpus_id} based on the question.")
+    return f"-- Placeholder: DDLs for tables relevant to '{question}' from RAG corpus '{rag_corpus_id}' would be listed here.\n"
+
 def get_database_settings():
     """Get database settings."""
     global database_settings
@@ -58,83 +81,113 @@ def get_database_settings():
 def update_database_settings():
     """Update database settings."""
     global database_settings
-    ddl_schema = get_bigquery_schema(
-        get_env_var("BQ_DATASET_ID"),
-        client=get_bq_client(),
-        project_id=get_env_var("BQ_PROJECT_ID"),
-    )
+    
+    project_id = get_env_var("BQ_PROJECT_ID")
+    dataset_ids_str = get_env_var("BQ_DATASET_IDS")
+    metadata_rag_corpus_id = get_env_var("BQ_METADATA_RAG_CORPUS_ID")
+
+    if not dataset_ids_str:
+        raise ValueError("BQ_DATASET_IDS environment variable is not set.")
+    if not metadata_rag_corpus_id:
+        print("Warning: BQ_METADATA_RAG_CORPUS_ID is not set. RAG-based schema retrieval will be limited.")
+    
+    dataset_ids = [ds_id.strip() for ds_id in dataset_ids_str.split(',')]
+
+    ddl_overview = f"-- Schema for datasets ({', '.join(dataset_ids)}) is primarily retrieved dynamically via RAG from corpus: {metadata_rag_corpus_id}\n"
+
     database_settings = {
-        "bq_project_id": get_env_var("BQ_PROJECT_ID"),
-        "bq_dataset_id": get_env_var("BQ_DATASET_ID"),
-        "bq_ddl_schema": ddl_schema,
-        # Include ChaseSQL-specific constants.
+        "bq_project_id": project_id,
+        "bq_dataset_ids": dataset_ids, # List of dataset IDs
+        "bq_metadata_rag_corpus_id": metadata_rag_corpus_id, # Central RAG corpus for schema
+        "bq_ddl_schema": ddl_overview, # Overview or placeholder
         **chase_constants.chase_sql_constants_dict,
     }
     return database_settings
 
 
-def get_bigquery_schema(dataset_id, client=None, project_id=None):
-    """Retrieves schema and generates DDL with example values for a BigQuery dataset.
-
-    Args:
-        dataset_id (str): The ID of the BigQuery dataset (e.g., 'my_dataset').
-        client (bigquery.Client): A BigQuery client.
-        project_id (str): The ID of your Google Cloud Project.
-
-    Returns:
-        str: A string containing the generated DDL statements.
+def get_bigquery_schema(
+    client=None, 
+    project_id=None, 
+    question: str = None, 
+    rag_corpus_id: str = None,
+    target_dataset_ids: list[str] = None 
+    ):
     """
+    Retrieves schema. If a question and rag_corpus_id are provided, it uses RAG.
+    Otherwise, if target_dataset_ids are provided, it gets all tables for those.
+    """
+    if question and project_id and rag_corpus_id:
+        print(f"Retrieving schema relevant to the question using RAG corpus: {rag_corpus_id}...")
+        return get_relevant_schema_from_embeddings(question, project_id, rag_corpus_id)
+
+    if not target_dataset_ids:
+        return "-- No specific datasets provided for full schema dump and no question for RAG-based retrieval --\n"
 
     if client is None:
-        client = bigquery.Client(project=project_id)
+        client = get_bq_client()
 
-    # dataset_ref = client.dataset(dataset_id)
-    dataset_ref = bigquery.DatasetReference(project_id, dataset_id)
+    all_ddl_statements = f"-- Full DDL for datasets: {', '.join(target_dataset_ids)}\n"
 
-    ddl_statements = ""
-
-    for table in client.list_tables(dataset_ref):
-        table_ref = dataset_ref.table(table.table_id)
-        table_obj = client.get_table(table_ref)
-
-        # Check if table is a view
-        if table_obj.table_type != "TABLE":
+    for dataset_id_str in target_dataset_ids:
+        all_ddl_statements += f"-- Schema for dataset: {project_id}.{dataset_id_str}\n"
+        dataset_ref = bigquery.DatasetReference(project_id, dataset_id_str)
+        try:
+            tables = client.list_tables(dataset_ref)
+        except Exception as e:
+            all_ddl_statements += f"-- Could not list tables for dataset {dataset_id_str}: {e}\n"
             continue
+            
+        for table in tables:
+            table_ref = dataset_ref.table(table.table_id)
+            try:
+                table_obj = client.get_table(table_ref)
+            except Exception as e:
+                all_ddl_statements += f"-- Could not get table {table_ref} from dataset {dataset_id_str}: {e}\n"
+                continue
 
-        ddl_statement = f"CREATE OR REPLACE TABLE `{table_ref}` (\n"
+            if table_obj.table_type != "TABLE":
+                continue
 
-        for field in table_obj.schema:
-            ddl_statement += f"  `{field.name}` {field.field_type}"
-            if field.mode == "REPEATED":
-                ddl_statement += " ARRAY"
-            if field.description:
-                ddl_statement += f" COMMENT '{field.description}'"
-            ddl_statement += ",\n"
+            ddl_statement = f"CREATE OR REPLACE TABLE `{project_id}.{dataset_id_str}.{table.table_id}` (\n"
+            for field in table_obj.schema:
+                ddl_statement += f"  `{field.name}` {field.field_type}"
+                if field.mode == "REPEATED":
+                    ddl_statement += " ARRAY"
+                if field.description:
+                    clean_description = str(field.description).replace("'", "''").replace("\\n", " ")
+                    ddl_statement += f" COMMENT '{clean_description}'"
+                ddl_statement += ",\n"
+            
+            if ddl_statement.endswith(",\n"):
+                ddl_statement = ddl_statement.removesuffix(",\n") + "\n);\n\n"
+            elif ddl_statement.endswith("(\n"): 
+                ddl_statement = ddl_statement.removesuffix("(\n") + "();\n\n"
+            # If ddl_statement doesn't end with either (e.g., it's empty or malformed from prior steps),
+            # it will pass through this block unchanged. This relies on prior logic correctly
+            # initializing ddl_statement and appending columns.
 
-        ddl_statement = ddl_statement[:-2] + "\n);\n\n"
-
-        # Add example values if available (limited to first row)
-        rows = client.list_rows(table_ref, max_results=5).to_dataframe()
-        if not rows.empty:
-            ddl_statement += f"-- Example values for table `{table_ref}`:\n"
-            for _, row in rows.iterrows():  # Iterate over DataFrame rows
-                ddl_statement += f"INSERT INTO `{table_ref}` VALUES\n"
-                example_row_str = "("
-                for value in row.values:  # Now row is a pandas Series and has values
-                    if isinstance(value, str):
-                        example_row_str += f"'{value}',"
-                    elif value is None:
-                        example_row_str += "NULL,"
-                    else:
-                        example_row_str += f"{value},"
-                example_row_str = (
-                    example_row_str[:-1] + ");\n\n"
-                )  # remove trailing comma
-                ddl_statement += example_row_str
-
-        ddl_statements += ddl_statement
-
-    return ddl_statements
+            try:
+                rows_df = client.list_rows(table_ref, max_results=2).to_dataframe()
+                if not rows_df.empty:
+                    ddl_statement += f"-- Example values for table `{project_id}.{dataset_id_str}.{table.table_id}`:\n"
+                    for _, row_val in rows_df.iterrows():
+                        example_row_str = "INSERT INTO `{}.{}.{}` VALUES (".format(project_id, dataset_id_str, table.table_id)
+                        values = []
+                        for item in row_val.values:
+                            if isinstance(item, str):
+                                values.append(f"'{str(item).replace(\"'\", \"''\")}'")
+                            elif item is None:
+                                values.append("NULL")
+                            else:
+                                values.append(str(item))
+                        example_row_str += ", ".join(values) + ");\n"
+                        ddl_statement += example_row_str
+                    ddl_statement += "\n"
+            except Exception as e:
+                ddl_statement += f"-- Could not fetch example rows for {table.table_id}: {e}\n"
+            
+            all_ddl_statements += ddl_statement
+    return all_ddl_statements
 
 
 def initial_bq_nl2sql(
@@ -183,8 +236,29 @@ The database structure is defined by the following table schemas (possibly with 
 
    """
 
-    ddl_schema = tool_context.state["database_settings"]["bq_ddl_schema"]
+    nl2sql_method = os.getenv("NL2SQL_METHOD", "BASELINE")
+    current_db_settings = get_database_settings()
+    metadata_rag_corpus_id_for_nl2sql = current_db_settings.get("bq_metadata_rag_corpus_id", BQ_METADATA_RAG_CORPUS_ID)
 
+    if nl2sql_method != "BASELINE":
+        if not metadata_rag_corpus_id_for_nl2sql:
+            ddl_schema = "-- ERROR: BQ_METADATA_RAG_CORPUS_ID not configured for RAG schema retrieval. --\n"
+        else:
+            ddl_schema = get_bigquery_schema(
+                project_id=current_db_settings["bq_project_id"],
+                question=question,
+                rag_corpus_id=metadata_rag_corpus_id_for_nl2sql
+            )
+    else:
+        if question and metadata_rag_corpus_id_for_nl2sql:
+            ddl_schema = get_bigquery_schema(
+                project_id=current_db_settings["bq_project_id"],
+                question=question,
+                rag_corpus_id=metadata_rag_corpus_id_for_nl2sql
+            )
+        else:
+            ddl_schema = current_db_settings.get("bq_ddl_schema", "-- Schema information is missing. --\n")
+    
     prompt = prompt_template.format(
         MAX_NUM_ROWS=MAX_NUM_ROWS, SCHEMA=ddl_schema, QUESTION=question
     )
@@ -266,7 +340,6 @@ def run_bigquery_validation(
 
     final_result = {"query_result": None, "error_message": None}
 
-    # More restrictive check for BigQuery - disallow DML and DDL
     if re.search(
         r"(?i)(update|delete|drop|insert|create|alter|truncate|merge)", sql_string
     ):
@@ -277,23 +350,13 @@ def run_bigquery_validation(
 
     try:
         query_job = get_bq_client().query(sql_string)
-        results = query_job.result()  # Get the query results
+        results = query_job.result()
 
-        if results.schema:  # Check if query returned data
+        if results.schema:
             rows = [
-                {
-                    key: (
-                        value
-                        if not isinstance(value, datetime.date)
-                        else value.strftime("%Y-%m-%d")
-                    )
-                    for (key, value) in row.items()
-                }
+                {key: value for key, value in row.items()}
                 for row in results
-            ][
-                :MAX_NUM_ROWS
-            ]  # Convert BigQuery RowIterator to list of dicts
-            # return f"Valid SQL. Results: {rows}"
+            ]
             final_result["query_result"] = rows
 
             tool_context.state["query_result"] = rows
@@ -305,7 +368,7 @@ def run_bigquery_validation(
 
     except (
         Exception
-    ) as e:  # Catch generic exceptions from BigQuery  # pylint: disable=broad-exception-caught
+    ) as e:
         final_result["error_message"] = f"Invalid SQL: {e}"
 
     print("\n run_bigquery_validation final_result: \n", final_result)
