@@ -135,6 +135,37 @@ def update_database_settings():
 # ...
 ```
 
+### RAG for Schema Retrieval
+
+The Data Science agent can perform Retrieval Augmented Generation (RAG) over database schemas to ground its SQL generation capabilities. This involves:
+
+1.  **Embedding Generation**: When a database is configured, its schema (table names, column names, column descriptions, data types, etc.) is processed. Each relevant piece of metadata (e.g., "table: customers", "column: email_address (VARCHAR) - The primary email address of the customer") is converted into a numerical vector (embedding) using a text embedding model (e.g., `text-embedding-004` from Vertex AI).
+
+2.  **Storing Embeddings**: These embeddings, along with their corresponding metadata (like the DDL statement for the table the column belongs to, or the column description itself), are stored in a centralized RAG corpus. In the reference implementation, this corpus is a BigQuery table. This table must contain at least an `embedding` column (ARRAY<FLOAT64>) and a `table_ddl` column (STRING) which stores the DDL for the table associated with the embedded element.
+    *   The `rag_corpus_id` parameter in `get_relevant_schema_from_embeddings` refers to this BigQuery table in the format `dataset_id.table_id`.
+
+3.  **Querying with RAG**: When the agent needs to generate SQL for a user's question:
+    *   The user's natural language question is converted into an embedding using the same text embedding model.
+    *   This question embedding is used to query the RAG corpus (the BigQuery table containing schema embeddings).
+    *   The query uses `ML.DISTANCE` (specifically cosine similarity) to find schema elements whose embeddings are most similar to the question embedding.
+    *   The `get_relevant_schema_from_embeddings` function retrieves the `table_ddl` for the tables associated with the top N most relevant schema elements.
+
+4.  **Informing SQL Generation**: The retrieved DDL statements (representing the most relevant parts of the database schema) are then provided as context to the LLM when it generates the SQL query. This helps the LLM understand the structure of the relevant tables and columns, leading to more accurate and efficient SQL generation.
+
+**Current Implementation (`get_relevant_schema_from_embeddings`):**
+
+*   Takes the user's `question`, `project_id`, and `rag_corpus_id` (e.g., `my_dataset.my_schema_embeddings_table`) as input.
+*   Generates an embedding for the input `question`.
+*   Constructs a BigQuery SQL query that:
+    *   Selects from the specified RAG corpus table (`project_id.dataset_id.table_id`).
+    *   Calculates the cosine distance between the `question_embedding` and the stored `embedding` for each schema element in the corpus.
+    *   Orders the results by this distance (ascending, so most similar comes first).
+    *   Returns the distinct `table_ddl` for the top 5 most relevant schema elements.
+*   If successful, it returns a string containing the DDLs of the most relevant tables, separated by double newlines.
+*   Includes error handling for missing configuration or issues during the BigQuery query execution.
+
+This RAG-based approach allows the agent to dynamically fetch only the most pertinent schema information for a given question, rather than overwhelming the LLM with the entire database schema, especially for large and complex databases.
+
 ## Future Enhancements
 -   Implementation of the actual RAG querying logic against a vector database.
 -   Functions to build and update the RAG index from BigQuery schema.

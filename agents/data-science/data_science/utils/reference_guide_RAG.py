@@ -83,32 +83,49 @@ def ingest_files(corpus_name):
     rag.list_files(corpus_name)
 
 
-def rag_response(query: str) -> str:
-    """Retrieves contextually relevant information from a RAG corpus.
+def query_vertex_rag_corpus(query: str, corpus_name: str, top_k: int = 3, vector_distance_threshold: float = 0.5) -> str:
+    """Retrieves contextually relevant text snippets from a specified Vertex AI RAG corpus.
 
     Args:
         query (str): The query string to search within the corpus.
+        corpus_name (str): The full name of the Vertex AI RAG corpus
+                           (e.g., "projects/.../locations/.../ragCorpora/...").
+        top_k (int): The number of top results to retrieve.
+        vector_distance_threshold (float): The threshold for vector distance.
+                           Results with distance greater than this will be filtered out.
 
     Returns:
-        vertexai.rag.RagRetrievalQueryResponse: The response containing retrieved
-        information from the corpus.
+        str: A string containing the concatenated text of the retrieved contexts,
+             separated by double newlines, or an error/status message if no contexts
+             are found or an error occurs.
     """
-    corpus_name = os.getenv("BQML_RAG_CORPUS_NAME")
+    if not corpus_name:
+        print("Error: Vertex AI RAG Corpus name not provided.")
+        return "-- ERROR: Vertex AI RAG Corpus name not provided. --"
 
     rag_retrieval_config = rag.RagRetrievalConfig(
-        top_k=3,  # Optional
-        filter=rag.Filter(vector_distance_threshold=0.5),  # Optional
+        top_k=top_k,
+        filter=rag.Filter(vector_distance_threshold=vector_distance_threshold),
     )
-    response = rag.retrieval_query(
-        rag_resources=[
-            rag.RagResource(
-                rag_corpus=corpus_name,
-            )
-        ],
-        text=query,
-        rag_retrieval_config=rag_retrieval_config,
-    )
-    return str(response)
+    try:
+        response = rag.retrieval_query(
+            rag_resources=[
+                rag.RagResource(
+                    rag_corpus=corpus_name,
+                )
+            ],
+            text=query,
+            rag_retrieval_config=rag_retrieval_config,
+        )
+        
+        if response.retrieved_contexts:
+            return "\n\n".join([context.text for context in response.retrieved_contexts if context.text])
+        else:
+            return f"-- No relevant contexts found in Vertex AI RAG corpus '{corpus_name}' for the query: '{query}'. --"
+    except Exception as e:
+        error_message = f"Error querying Vertex AI RAG corpus '{corpus_name}': {e}"
+        print(error_message)
+        return f"-- ERROR: {error_message} --"
 
 
 def write_to_env(corpus_name):
