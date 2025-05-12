@@ -16,14 +16,30 @@
 """Utility functions for performing RAG over database schemas."""
 
 import os
-# To avoid circular dependency, get_bq_client could be moved to a more general utility
-# or passed as an argument if schema_rag.py is imported by bigquery/tools.py.
-# For now, attempting a direct import, but this might need refactoring.
-from ..sub_agents.bigquery.tools import get_bq_client
 from vertexai.language_models import TextEmbeddingModel
-from google.cloud import bigquery # Added import
+from google.cloud import bigquery
 
 SCHEMA_EMBEDDING_MODEL_NAME = os.getenv("SCHEMA_EMBEDDING_MODEL_NAME", "text-embedding-004")
+
+def construct_text_for_column_embedding(dataset_name: str, dataset_description: str,
+                                        table_name: str, table_description: str,
+                                        column_name: str, column_description: str,
+                                        column_data_type: str) -> str:
+    """
+    Constructs a single string from column metadata for embedding generation.
+    This function would be used during the RAG corpus population phase.
+    Example: "Dataset: sales_data. Dataset Description: Contains all sales transactions. Table: orders. Table Description: Information about customer orders. Column: order_date. Column Description: The date when the order was placed. Column Data Type: DATE"
+    """
+    parts = [
+        f"Dataset: {dataset_name}",
+        f"Dataset Description: {dataset_description}" if dataset_description else None,
+        f"Table: {table_name}",
+        f"Table Description: {table_description}" if table_description else None,
+        f"Column: {column_name}",
+        f"Column Description: {column_description}" if column_description else None,
+        f"Column Data Type: {column_data_type}"
+    ]
+    return ". ".join(filter(None, parts))
 
 def get_column_embeddings(texts: list[str]) -> list[list[float]]:
     """Generates embeddings for a list of texts."""
@@ -31,15 +47,27 @@ def get_column_embeddings(texts: list[str]) -> list[list[float]]:
     embeddings = model.get_embeddings(texts)
     return [embedding.values for embedding in embeddings]
 
-def get_relevant_schema_from_embeddings(question: str, project_id: str, rag_corpus_id: str) -> str:
+def get_relevant_schema_from_embeddings(
+    question: str,
+    project_id: str,
+    rag_corpus_id: str,
+    bq_client: bigquery.Client,
+    top_k_columns: int = 10
+) -> str:
     """
-    Retrieves relevant schema details (primarily table DDLs) based on vector similarity to the question,
-    querying a centralized RAG corpus in BigQuery that contains metadata and embeddings for schema elements.
+    Retrieves relevant schema details (top K columns and their table DDLs) based on vector similarity to the question,
+    querying a centralized RAG corpus in BigQuery using the provided BigQuery client.
 
-    The RAG corpus table is expected to have at least 'embedding' (ARRAY<FLOAT64>) and 'table_ddl' (STRING) columns.
+    The RAG corpus table is expected to have at least:
+    - 'embedding' (ARRAY<FLOAT64>): Embedding of the column's descriptive text (e.g., generated from construct_text_for_column_embedding).
+    - 'dataset_name' (STRING)
+    - 'table_name' (STRING)
+    - 'column_name' (STRING)
+    - 'column_data_type' (STRING)
+    - 'column_description' (STRING, optional)
+    - 'table_ddl' (STRING): DDL of the table the column belongs to.
     'rag_corpus_id' should be in the format 'dataset_id.table_id'.
     """
-    client = get_bq_client() # Assumes get_bq_client() is correctly implemented.
     question_embedding = get_column_embeddings([question])[0]
 
     if not rag_corpus_id:
@@ -50,26 +78,35 @@ def get_relevant_schema_from_embeddings(question: str, project_id: str, rag_corp
         print("Error: project_id is not set. Cannot query schema embeddings.")
         return "-- ERROR: project_id not configured. --"
 
-    # rag_corpus_id is expected to be in the format "dataset_id.table_id"
     full_table_id = f"{project_id}.{rag_corpus_id}"
 
-    print(f"Querying RAG Corpus: {full_table_id} for question: '{question}' using embeddings.")
+    print(f"Querying RAG Corpus: {full_table_id} for question: '{question}' to find top {top_k_columns} columns.")
 
-    # Construct the BigQuery SQL query using ML.DISTANCE for cosine similarity.
-    # This retrieves distinct DDLs for tables associated with the top N most relevant schema elements.
     query = f"""
-    WITH RelevantElements AS (
+    WITH RankedColumns AS (
         SELECT
+            dataset_name,
+            table_name,
+            column_name,
+            column_data_type,
+            COALESCE(column_description, 'N/A') as column_description,
             table_ddl,
             ML.DISTANCE(embedding, @question_embedding, 'COSINE') AS distance
         FROM
             `{full_table_id}`
-        WHERE embedding IS NOT NULL AND table_ddl IS NOT NULL
+        WHERE embedding IS NOT NULL AND table_ddl IS NOT NULL AND column_name IS NOT NULL
+        ORDER BY distance ASC
+        LIMIT {top_k_columns}
     )
-    SELECT DISTINCT table_ddl
-    FROM RelevantElements
-    ORDER BY distance ASC
-    LIMIT 5  -- Retrieve DDLs for tables associated with the top 5 relevant elements
+    SELECT
+        rc.dataset_name,
+        rc.table_name,
+        rc.column_name,
+        rc.column_data_type,
+        rc.column_description,
+        rc.table_ddl
+    FROM RankedColumns rc
+    ORDER BY rc.distance ASC
     """
 
     job_config = bigquery.QueryJobConfig(
@@ -79,20 +116,38 @@ def get_relevant_schema_from_embeddings(question: str, project_id: str, rag_corp
     )
 
     try:
-        query_job = client.query(query, job_config=job_config)
-        results = query_job.result()  # Waits for the job to complete.
+        query_job = bq_client.query(query, job_config=job_config)
+        results = query_job.result()
 
-        ddls = [row.table_ddl for row in results if row.table_ddl]
+        if not results.total_rows:
+            return f"-- No relevant columns found in '{full_table_id}' for the question: '{question}'. Ensure the RAG corpus is populated correctly with column-level embeddings and metadata, and that embeddings match the model '{SCHEMA_EMBEDDING_MODEL_NAME}'. --"
 
-        if not ddls:
-            return f"-- No relevant DDLs found in '{full_table_id}' for the question: '{question}'. Ensure the table contains 'embedding' and 'table_ddl' columns and that embeddings match the model '{SCHEMA_EMBEDDING_MODEL_NAME}'. --"
+        table_schemas = {}
+        column_details_parts = []
 
-        return "\n\n".join(ddls)
+        for row in results:
+            table_key = f"{row.dataset_name}.{row.table_name}"
+            if table_key not in table_schemas:
+                table_schemas[table_key] = row.table_ddl
+
+            column_info = (
+                f"- Dataset: {row.dataset_name}, Table: {row.table_name}, Column: {row.column_name}, "
+                f"Type: {row.column_data_type}, Description: {row.column_description}"
+            )
+            column_details_parts.append(column_info)
+
+        output_parts = ["-- Relevant Columns based on your question:"]
+        output_parts.extend(column_details_parts)
+        output_parts.append("\n-- Corresponding Table DDLs (schema):")
+
+        for table_key, ddl in table_schemas.items():
+            output_parts.append(f"-- Schema for table {table_key}:\n{ddl}")
+
+        return "\n".join(output_parts)
 
     except Exception as e:
-        error_message = f"Error querying BigQuery RAG corpus '{full_table_id}': {e}. Check table structure, permissions, and if BigQuery ML API is enabled."
-        print(error_message)
-        return f"-- ERROR: {error_message} --"
+        print(f"Error querying schema embeddings: {e}")
+        return f"-- ERROR querying RAG corpus '{full_table_id}': {e} --"
 
 # Future enhancements could include:
 # - A function to build/update the RAG index from BigQuery schema if not using an external corpus.
