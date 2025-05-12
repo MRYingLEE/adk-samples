@@ -88,9 +88,7 @@ def get_relevant_schema_from_embeddings(
             dataset_name,
             table_name,
             column_name,
-            column_data_type,
-            COALESCE(column_description, 'N/A') as column_description,
-            table_ddl,
+            column_data_type,            COALESCE(column_description, 'N/A') as column_description,
             ML.DISTANCE(embedding, @question_embedding, 'COSINE') AS distance
         FROM
             `{full_table_id}`
@@ -122,13 +120,14 @@ def get_relevant_schema_from_embeddings(
         if not results.total_rows:
             return f"-- No relevant columns found in '{full_table_id}' for the question: '{question}'. Ensure the RAG corpus is populated correctly with column-level embeddings and metadata, and that embeddings match the model '{SCHEMA_EMBEDDING_MODEL_NAME}'. --"
 
-        table_schemas = {}
+        # Accumulate column definitions per table instead of using full table_ddl
+        table_column_defs = {}
         column_details_parts = []
 
         for row in results:
             table_key = f"{row.dataset_name}.{row.table_name}"
-            if table_key not in table_schemas:
-                table_schemas[table_key] = row.table_ddl
+            # collect only relevant column definitions
+            table_column_defs.setdefault(table_key, []).append(f"{row.column_name} {row.column_data_type}")
 
             column_info = (
                 f"- Dataset: {row.dataset_name}, Table: {row.table_name}, Column: {row.column_name}, "
@@ -138,10 +137,16 @@ def get_relevant_schema_from_embeddings(
 
         output_parts = ["-- Relevant Columns based on your question:"]
         output_parts.extend(column_details_parts)
-        output_parts.append("\n-- Corresponding Table DDLs (schema):")
+        output_parts.append("\n-- Simplified Table Schemas for selected columns:")
 
-        for table_key, ddl in table_schemas.items():
-            output_parts.append(f"-- Schema for table {table_key}:\n{ddl}")
+        for table_key, cols in table_column_defs.items():
+            # build a partial CREATE TABLE statement with only selected columns
+            ddl = (
+                f"CREATE TABLE {table_key} (\n    " \
+                + ",\n    ".join(cols) \
+                + "\n);"
+            )
+            output_parts.append(ddl)
 
         return "\n".join(output_parts)
 
