@@ -20,6 +20,8 @@ import os
 import re
 
 from data_science.utils.utils import get_env_var
+# Import the new RAG utility
+from data_science.utils.schema_rag import get_relevant_schema_from_embeddings as get_relevant_schema_via_rag
 from google.adk.tools import ToolContext
 from google.cloud import bigquery
 from google.genai import Client
@@ -34,8 +36,8 @@ location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 llm_client = Client(vertexai=True, project=project, location=location)
 
 MAX_NUM_ROWS = 80
-SCHEMA_EMBEDDING_MODEL_NAME = os.getenv("SCHEMA_EMBEDDING_MODEL_NAME", "text-embedding-004")
-MAX_SCHEMA_RESULTS = 20
+# SCHEMA_EMBEDDING_MODEL_NAME is now defined in schema_rag.py
+# MAX_SCHEMA_RESULTS = 20 # This constant might still be useful depending on RAG implementation details
 BQ_METADATA_RAG_CORPUS_ID = os.getenv("BQ_METADATA_RAG_CORPUS_ID")
 
 database_settings = None
@@ -49,26 +51,6 @@ def get_bq_client():
         bq_client = bigquery.Client(project=get_env_var("BQ_PROJECT_ID"))
     return bq_client
 
-
-def get_column_embeddings(texts: list[str]) -> list[list[float]]:
-    """Generates embeddings for a list of texts."""
-    model = TextEmbeddingModel.from_pretrained(SCHEMA_EMBEDDING_MODEL_NAME)
-    embeddings = model.get_embeddings(texts)
-    return [embedding.values for embedding in embeddings]
-
-def get_relevant_schema_from_embeddings(question: str, project_id: str, rag_corpus_id: str) -> str:
-    """Retrieves relevant schema details (tables and columns) based on vector similarity to the question,
-    querying a centralized RAG corpus that contains metadata for all configured datasets."""
-    client = get_bq_client()
-    question_embedding = get_column_embeddings([question])[0]
-
-    if not rag_corpus_id:
-        print("Error: BQ_METADATA_RAG_CORPUS_ID is not set. Cannot query schema embeddings.")
-        return ""
-
-    print(f"Querying RAG Corpus: {rag_corpus_id} for question: {question}")
-    print(f"Fetching relevant DDL from RAG corpus {rag_corpus_id} based on the question.")
-    return f"-- Placeholder: DDLs for tables relevant to '{question}' from RAG corpus '{rag_corpus_id}' would be listed here.\n"
 
 def get_database_settings():
     """Get database settings."""
@@ -93,7 +75,8 @@ def update_database_settings():
     
     dataset_ids = [ds_id.strip() for ds_id in dataset_ids_str.split(',')]
 
-    ddl_overview = f"-- Schema for datasets ({', '.join(dataset_ids)}) is primarily retrieved dynamically via RAG from corpus: {metadata_rag_corpus_id}\n"
+    # The ddl_overview can be simplified as dynamic RAG will be the primary source for question-specific schema
+    ddl_overview = f"-- Schema for datasets ({', '.join(dataset_ids)}) is primarily retrieved dynamically via RAG from corpus: {metadata_rag_corpus_id} when a question is provided. Otherwise, full schema for targeted datasets is fetched. --\n"
 
     database_settings = {
         "bq_project_id": project_id,
@@ -118,7 +101,8 @@ def get_bigquery_schema(
     """
     if question and project_id and rag_corpus_id:
         print(f"Retrieving schema relevant to the question using RAG corpus: {rag_corpus_id}...")
-        return get_relevant_schema_from_embeddings(question, project_id, rag_corpus_id)
+        # Use the new RAG function
+        return get_relevant_schema_via_rag(question, project_id, rag_corpus_id)
 
     if not target_dataset_ids:
         return "-- No specific datasets provided for full schema dump and no question for RAG-based retrieval --\n"
@@ -239,25 +223,27 @@ The database structure is defined by the following table schemas (possibly with 
     nl2sql_method = os.getenv("NL2SQL_METHOD", "BASELINE")
     current_db_settings = get_database_settings()
     metadata_rag_corpus_id_for_nl2sql = current_db_settings.get("bq_metadata_rag_corpus_id", BQ_METADATA_RAG_CORPUS_ID)
+    project_id_for_nl2sql = current_db_settings.get("bq_project_id")
 
-    if nl2sql_method != "BASELINE":
-        if not metadata_rag_corpus_id_for_nl2sql:
-            ddl_schema = "-- ERROR: BQ_METADATA_RAG_CORPUS_ID not configured for RAG schema retrieval. --\n"
-        else:
-            ddl_schema = get_bigquery_schema(
-                project_id=current_db_settings["bq_project_id"],
-                question=question,
-                rag_corpus_id=metadata_rag_corpus_id_for_nl2sql
-            )
+    # Always try to use RAG if question and corpus ID are available, regardless of NL2SQL_METHOD
+    # as it provides the most relevant schema.
+    if question and project_id_for_nl2sql and metadata_rag_corpus_id_for_nl2sql:
+        ddl_schema = get_bigquery_schema(
+            project_id=project_id_for_nl2sql,
+            question=question,
+            rag_corpus_id=metadata_rag_corpus_id_for_nl2sql
+        )
+    # Fallback to full schema dump only if RAG cannot be used (e.g., no question for context)
+    # and specific datasets are targeted (though initial_bq_nl2sql always has a question).
+    # This path might be less common for initial_bq_nl2sql.
+    elif current_db_settings.get("bq_dataset_ids"):
+         ddl_schema = get_bigquery_schema(
+            project_id=project_id_for_nl2sql,
+            target_dataset_ids=current_db_settings.get("bq_dataset_ids")
+        )
     else:
-        if question and metadata_rag_corpus_id_for_nl2sql:
-            ddl_schema = get_bigquery_schema(
-                project_id=current_db_settings["bq_project_id"],
-                question=question,
-                rag_corpus_id=metadata_rag_corpus_id_for_nl2sql
-            )
-        else:
-            ddl_schema = current_db_settings.get("bq_ddl_schema", "-- Schema information is missing. --\n")
+        # Default if no other schema can be obtained
+        ddl_schema = current_db_settings.get("bq_ddl_schema", "-- Schema information is missing or could not be retrieved. --\n")
     
     prompt = prompt_template.format(
         MAX_NUM_ROWS=MAX_NUM_ROWS, SCHEMA=ddl_schema, QUESTION=question
