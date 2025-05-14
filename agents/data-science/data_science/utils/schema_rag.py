@@ -21,19 +21,23 @@ from google.cloud import bigquery
 
 SCHEMA_EMBEDDING_MODEL_NAME = os.getenv("SCHEMA_EMBEDDING_MODEL_NAME", "text-embedding-004")
 
-def construct_text_for_column_embedding(dataset_name: str, dataset_description: str,
+def construct_text_for_column_embedding(project_id: str, dataset_name: str, dataset_description: str,
                                         table_name: str, table_description: str,
                                         column_name: str, column_description: str,
                                         column_data_type: str) -> str:
     """
     Constructs a single string from column metadata for embedding generation.
     This function would be used during the RAG corpus population phase.
-    Example: "Dataset: sales_data. Dataset Description: Contains all sales transactions. Table: orders. Table Description: Information about customer orders. Column: order_date. Column Description: The date when the order was placed. Column Data Type: DATE"
+    Example: "Project: my-project. Dataset: sales_data. Dataset Description: Contains all sales transactions. Table: my-project.sales_data.orders. Table Description: Information about customer orders. Column: order_date. Column Description: The date when the order was placed. Column Data Type: DATE"
     """
+    # Create full qualified table name in format project.dataset.table
+    full_table_name = f"{project_id}.{dataset_name}.{table_name}"
+    
     parts = [
+        f"Project: {project_id}",
         f"Dataset: {dataset_name}",
         f"Dataset Description: {dataset_description}" if dataset_description else None,
-        f"Table: {table_name}",
+        f"Table: {full_table_name}",
         f"Table Description: {table_description}" if table_description else None,
         f"Column: {column_name}",
         f"Column Description: {column_description}" if column_description else None,
@@ -104,6 +108,7 @@ def get_relevant_schema_from_embeddings(
     query = f"""
     WITH RankedColumns AS (
         SELECT
+            project_id,
             dataset_name,
             table_name,
             column_name,
@@ -117,6 +122,7 @@ def get_relevant_schema_from_embeddings(
         LIMIT {top_k_columns}
     )
     SELECT
+        rc.project_id,
         rc.dataset_name,
         rc.table_name,
         rc.column_name,
@@ -126,8 +132,8 @@ def get_relevant_schema_from_embeddings(
         STRING_AGG(DISTINCT CONCAT(other.column_name, ' ', other.data_type), ',\n    ') AS all_columns
     FROM RankedColumns rc
     JOIN `{full_table_id}` other
-    ON rc.dataset_name = other.dataset_name AND rc.table_name = other.table_name
-    GROUP BY rc.dataset_name, rc.table_name, rc.column_name, rc.column_data_type, rc.column_description, rc.distance
+    ON rc.project_id = other.project_id AND rc.dataset_name = other.dataset_name AND rc.table_name = other.table_name
+    GROUP BY rc.project_id, rc.dataset_name, rc.table_name, rc.column_name, rc.column_data_type, rc.column_description, rc.distance
     ORDER BY rc.distance ASC
     """
 
@@ -149,12 +155,12 @@ def get_relevant_schema_from_embeddings(
         column_details_parts = []
 
         for row in results:
-            table_key = f"{row.dataset_name}.{row.table_name}"
+            full_table_key = f"{row.project_id}.{row.dataset_name}.{row.table_name}"
             # collect only relevant column definitions
-            table_column_defs.setdefault(table_key, []).append(f"{row.column_name} {row.column_data_type}")
+            table_column_defs.setdefault(full_table_key, []).append(f"{row.column_name} {row.column_data_type}")
 
             column_info = (
-                f"- Dataset: {row.dataset_name}, Table: {row.table_name}, Column: {row.column_name}, "
+                f"- Project: {row.project_id}, Dataset: {row.dataset_name}, Table: {row.table_name}, Column: {row.column_name}, "
                 f"Type: {row.column_data_type}, Description: {row.column_description}"
             )
             column_details_parts.append(column_info)

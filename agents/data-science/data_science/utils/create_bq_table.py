@@ -18,6 +18,7 @@ from google.cloud import bigquery
 from pathlib import Path
 from dotenv import load_dotenv
 from vertexai.language_models import TextEmbeddingModel
+from data_science.utils.schema_rag import construct_text_for_column_embedding
 
 # Define the path to the .env file
 env_file_path = Path(__file__).parent.parent.parent / ".env"
@@ -99,6 +100,8 @@ def create_schema_embeddings_table(project_id, data_dataset_name, rag_dataset_na
 
     # Define the schema for the schema_embeddings table
     schema = [
+        bigquery.SchemaField("project_id", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("dataset_name", "STRING", mode="REQUIRED"),
         bigquery.SchemaField("table_name", "STRING", mode="REQUIRED"),
         bigquery.SchemaField("column_name", "STRING", mode="REQUIRED"),
         bigquery.SchemaField("column_description", "STRING", mode="NULLABLE"),
@@ -137,10 +140,27 @@ def create_schema_embeddings_table(project_id, data_dataset_name, rag_dataset_na
 
         for field in current_table_obj.schema:
             description = field.description if field.description else ""
-            # Prepare text for embedding: include table name, column name, and description for better context
-            text_for_embedding = f"Table: {table_item.table_id}, Column: {field.name}, Description: {description}, Data Type: {field.field_type}"
+            # Store dataset information for the RAG corpus
+            dataset_description = data_dataset_ref.dataset_id  # Using dataset_id as description if none available
+            table_description = ""  # We would need to query INFORMATION_SCHEMA.TABLES for this
+            
+            # Prepare text for embedding with project_id included
+            full_table_name = f"{project_id}.{data_dataset_name}.{table_item.table_id}"
+            text_for_embedding = construct_text_for_column_embedding(
+                project_id=project_id,
+                dataset_name=data_dataset_name, 
+                dataset_description=dataset_description,
+                table_name=table_item.table_id,
+                table_description=table_description,
+                column_name=field.name, 
+                column_description=description, 
+                column_data_type=field.field_type
+            )
+            
             column_texts_for_embedding.append(text_for_embedding)
             column_details.append({
+                "project_id": project_id,
+                "dataset_name": data_dataset_name,
                 "table_name": table_item.table_id,
                 "column_name": field.name,
                 "column_description": description,
@@ -151,6 +171,8 @@ def create_schema_embeddings_table(project_id, data_dataset_name, rag_dataset_na
             embeddings = get_column_embeddings(column_texts_for_embedding)
             for i, detail in enumerate(column_details):
                 rows_to_insert.append({
+                    "project_id": detail["project_id"],
+                    "dataset_name": detail["dataset_name"],
                     "table_name": detail["table_name"],
                     "column_name": detail["column_name"],
                     "column_description": detail["column_description"],
