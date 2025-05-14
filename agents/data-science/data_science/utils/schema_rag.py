@@ -52,7 +52,8 @@ def get_relevant_schema_from_embeddings(
     project_id: str,
     rag_corpus_id: str,
     bq_client: bigquery.Client,
-    top_k_columns: int = 10
+    top_k_columns: int = 10,
+    location: str = None
 ) -> str:
     """
     Retrieves relevant schema details (top K columns and their table DDLs) based on vector similarity to the question,
@@ -65,8 +66,18 @@ def get_relevant_schema_from_embeddings(
     - 'column_name' (STRING)
     - 'column_data_type' (STRING)
     - 'column_description' (STRING, optional)
-    - 'table_ddl' (STRING): DDL of the table the column belongs to.
-    'rag_corpus_id' should be in the format 'dataset_id.table_id'.
+    - 'table_ddl' (STRING): The DDL of the table the column belongs to.
+    
+    Args:
+        question: User's question to match against column embeddings.
+        project_id: GCP project ID where the RAG corpus is located.
+        rag_corpus_id: ID of the RAG corpus in format 'dataset_id.table_id'.
+        bq_client: BigQuery client to use for querying.
+        top_k_columns: Number of most relevant columns to retrieve.
+        location: BigQuery dataset location (e.g., 'US', 'europe-west1').
+        
+    Returns:
+        A string containing relevant schemas based on the query.
     """
     question_embedding = get_column_embeddings([question])[0]
 
@@ -78,7 +89,15 @@ def get_relevant_schema_from_embeddings(
         print("Error: project_id is not set. Cannot query schema embeddings.")
         return "-- ERROR: project_id not configured. --"
 
-    full_table_id = f"{project_id}.{rag_corpus_id}"
+    # If rag_corpus_id already contains project_id in format 'project_id.dataset_id.table_id', extract parts
+    corpus_parts = rag_corpus_id.split('.')
+    if len(corpus_parts) == 3:  # Format is project_id.dataset_id.table_id
+        full_table_id = rag_corpus_id
+    elif len(corpus_parts) == 2:  # Format is dataset_id.table_id
+        full_table_id = f"{project_id}.{rag_corpus_id}"
+    else:  # Unexpected format
+        print(f"Error: Invalid RAG corpus ID format: {rag_corpus_id}")
+        return f"-- ERROR: Invalid RAG corpus ID format: {rag_corpus_id} --"
 
     print(f"Querying RAG Corpus: {full_table_id} for question: '{question}' to find top {top_k_columns} columns.")
 
@@ -88,11 +107,12 @@ def get_relevant_schema_from_embeddings(
             dataset_name,
             table_name,
             column_name,
-            column_data_type,            COALESCE(column_description, 'N/A') as column_description,
+            data_type as column_data_type,
+            COALESCE(column_description, 'N/A') as column_description,
             ML.DISTANCE(embedding, @question_embedding, 'COSINE') AS distance
         FROM
             `{full_table_id}`
-        WHERE embedding IS NOT NULL AND table_ddl IS NOT NULL AND column_name IS NOT NULL
+        WHERE embedding IS NOT NULL AND column_name IS NOT NULL
         ORDER BY distance ASC
         LIMIT {top_k_columns}
     )
@@ -102,8 +122,12 @@ def get_relevant_schema_from_embeddings(
         rc.column_name,
         rc.column_data_type,
         rc.column_description,
-        rc.table_ddl
+        -- Include all columns from the same table to construct a complete table definition
+        STRING_AGG(DISTINCT CONCAT(other.column_name, ' ', other.data_type), ',\n    ') AS all_columns
     FROM RankedColumns rc
+    JOIN `{full_table_id}` other
+    ON rc.dataset_name = other.dataset_name AND rc.table_name = other.table_name
+    GROUP BY rc.dataset_name, rc.table_name, rc.column_name, rc.column_data_type, rc.column_description, rc.distance
     ORDER BY rc.distance ASC
     """
 

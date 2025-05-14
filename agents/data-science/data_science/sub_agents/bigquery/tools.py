@@ -69,6 +69,8 @@ def update_database_settings():
     project_id = get_env_var("BQ_PROJECT_ID")
     dataset_ids_str = get_env_var("BQ_DATASET_IDS")
     metadata_rag_corpus_id = get_env_var("BQ_METADATA_RAG_CORPUS_ID")
+    rag_project_id = get_env_var("BQ_RAG_PROJECT_ID", default_value=project_id)
+    rag_dataset_id = get_env_var("BQ_RAG_DATASET_ID")
 
     if not dataset_ids_str:
         logger.warning("BQ_DATASET_IDS is not set. Schema overview will be limited.")
@@ -93,6 +95,8 @@ def update_database_settings():
         "bq_project_id": project_id,
         "bq_dataset_ids": dataset_ids, # List of dataset IDs
         "bq_metadata_rag_corpus_id": metadata_rag_corpus_id, # Central RAG corpus for schema
+        "bq_rag_project_id": rag_project_id, # Project ID where RAG dataset is stored
+        "bq_rag_dataset_id": rag_dataset_id, # Dataset ID where schema embeddings are stored
         "bq_ddl_schema": ddl_overview, # Overview or placeholder
         **chase_constants.chase_sql_constants_dict,
     }
@@ -105,7 +109,8 @@ def get_bigquery_schema(
     question: str = None, 
     rag_corpus_id: str = None, # This is BQ_METADATA_RAG_CORPUS_ID
     target_dataset_ids: list[str] = None,
-    top_k_columns_for_rag: int = 10 # New parameter for configurability
+    top_k_columns_for_rag: int = 10, # New parameter for configurability
+    rag_project_id: str = None # New parameter for RAG project ID
     ):
     """Get BigQuery schema.
 
@@ -113,19 +118,30 @@ def get_bigquery_schema(
     Otherwise, it fetches the full schema for the target_dataset_ids.
     """
     current_bq_client = client if client else get_bq_client()
+    db_settings = get_database_settings()
 
     # Resolve project_id and rag_corpus_id for RAG
-    # Use global 'project' (derived from BQ_PROJECT_ID env var) as a fallback if project_id is not directly passed or found by get_env_var
+    # Use global 'project' (derived from BQ_PROJECT_ID env var) as a fallback if project_id is not directly passed 
     resolved_project_id = project_id if project_id is not None else get_env_var("BQ_PROJECT_ID", default_value=project)
-    resolved_rag_corpus_id = rag_corpus_id if rag_corpus_id is not None else BQ_METADATA_RAG_CORPUS_ID # Use global
+    
+    # Use provided rag_project_id, or get it from settings, or fall back to resolved_project_id
+    resolved_rag_project_id = rag_project_id if rag_project_id is not None else (
+        db_settings.get("bq_rag_project_id") if db_settings else get_env_var("BQ_RAG_PROJECT_ID", default_value=resolved_project_id)
+    )
+    
+    # Resolve RAG corpus ID
+    resolved_rag_corpus_id = rag_corpus_id if rag_corpus_id is not None else (
+        db_settings.get("bq_metadata_rag_corpus_id") if db_settings else BQ_METADATA_RAG_CORPUS_ID
+    )
 
-    if question and resolved_project_id and resolved_rag_corpus_id:
+    if question and resolved_rag_project_id and resolved_rag_corpus_id:
         logger.info(
-            "Question provided. Using RAG to retrieve relevant column schemas from corpus %s.", resolved_rag_corpus_id
+            "Question provided. Using RAG to retrieve relevant column schemas from corpus %s in project %s", 
+            resolved_rag_corpus_id, resolved_rag_project_id
         )
         return get_relevant_schema_via_rag(
             question,
-            resolved_project_id,
+            resolved_rag_project_id,
             resolved_rag_corpus_id,
             bq_client=current_bq_client, # Pass the initialized bq_client
             top_k_columns=top_k_columns_for_rag

@@ -96,19 +96,23 @@ def initial_bq_nl2sql(
     print("****** Running agent with ChaseSQL algorithm.")
     project = tool_context.state["database_settings"]["bq_project_id"]
     dataset_ids_list = tool_context.state["database_settings"]["bq_dataset_ids"] # This is the list of data datasets
-    rag_db = tool_context.state["database_settings"].get("bq_rag_dataset_id") # Get RAG dataset from context
-
-    if not rag_db:
-        print("Warning: BQ_RAG_DATASET_ID not found in tool_context. ChaseSQL RAG features may be limited.")
+    
+    # Get RAG dataset information - now with separate project support
+    rag_corpus_id = tool_context.state["database_settings"].get("bq_metadata_rag_corpus_id") 
+    rag_project_id = tool_context.state["database_settings"].get("bq_rag_project_id")
+    
+    if not rag_corpus_id:
+        print("Warning: BQ_METADATA_RAG_CORPUS_ID not found in tool_context. ChaseSQL RAG features may be limited.")
         # Fallback to using the main data dataset for RAG if not specified, or handle error
-        # For CHASE, RAG is preferred. If rag_db is not set, schema retrieval might be limited
+        # For CHASE, RAG is preferred. If rag_corpus_id is not set, schema retrieval might be limited
         # or fall back to a general schema dump if implemented that way in get_bigquery_schema.
 
     # Retrieve schema based on the question using RAG or by listing schemas for all datasets
     ddl_schema = get_bigquery_schema(
         project_id=project,
         question=question,
-        rag_corpus_id=rag_db, # RAG corpus for embeddings lookup
+        rag_corpus_id=rag_corpus_id, # RAG corpus for embeddings lookup
+        rag_project_id=rag_project_id, # Project where RAG corpus is located
         target_dataset_ids=dataset_ids_list # Pass the list of dataset IDs
     )
     if not ddl_schema:
