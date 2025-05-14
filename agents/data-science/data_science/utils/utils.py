@@ -26,22 +26,25 @@ def list_all_extensions():
     print('Description:', extension.gca_resource.description)
 
 
-def get_env_var(var_name):
+def get_env_var(var_name, default_value=None):
   """Retrieves the value of an environment variable.
 
   Args:
     var_name: The name of the environment variable.
+    default_value: The value to return if the environment variable is not set.
 
   Returns:
-    The value of the environment variable, or None if it is not set.
+    The value of the environment variable, or default_value if it is not set.
 
   Raises:
-    ValueError: If the environment variable is not set.
+    ValueError: If the environment variable is not set and no default_value is provided.
   """
   try:
     value = os.environ[var_name]
     return value
   except KeyError:
+    if default_value is not None:
+      return default_value
     raise ValueError(f'Missing environment variable: {var_name}')
 
 
