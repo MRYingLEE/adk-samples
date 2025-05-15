@@ -98,11 +98,11 @@ def initial_bq_nl2sql(
     dataset_ids_list = tool_context.state["database_settings"]["bq_dataset_ids"] # This is the list of data datasets
     
     # Get RAG dataset information - now with separate project support
-    rag_corpus_id = tool_context.state["database_settings"].get("bq_metadata_rag_corpus_id") 
+    rag_corpus_id = tool_context.state["database_settings"].get("BQ_METADATA_RAG_TABLE_ID") 
     rag_project_id = tool_context.state["database_settings"].get("bq_rag_project_id")
     
     if not rag_corpus_id:
-        print("Warning: BQ_METADATA_RAG_CORPUS_ID not found in tool_context. ChaseSQL RAG features may be limited.")
+        print("Warning: BQ_METADATA_RAG_TABLE_ID not found in tool_context. ChaseSQL RAG features may be limited.")
         # Fallback to using the main data dataset for RAG if not specified, or handle error
         # For CHASE, RAG is preferred. If rag_corpus_id is not set, schema retrieval might be limited
         # or fall back to a general schema dump if implemented that way in get_bigquery_schema.

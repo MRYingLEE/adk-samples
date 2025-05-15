@@ -40,7 +40,7 @@ llm_client = Client(vertexai=True, project=project, location=location)
 MAX_NUM_ROWS = 80
 # SCHEMA_EMBEDDING_MODEL_NAME is now defined in schema_rag.py
 # MAX_SCHEMA_RESULTS = 20 # This constant might still be useful depending on RAG implementation details
-BQ_METADATA_RAG_CORPUS_ID = os.getenv("BQ_METADATA_RAG_CORPUS_ID")
+BQ_METADATA_RAG_TABLE_ID = os.getenv("BQ_METADATA_RAG_TABLE_ID")
 
 database_settings = None
 bq_client = None
@@ -68,7 +68,7 @@ def update_database_settings():
     
     project_id = get_env_var("BQ_PROJECT_ID")
     dataset_ids_str = get_env_var("BQ_DATASET_IDS")
-    metadata_rag_corpus_id = get_env_var("BQ_METADATA_RAG_CORPUS_ID")
+    metadata_rag_corpus_id = get_env_var("BQ_METADATA_RAG_TABLE_ID")
     rag_project_id = get_env_var("BQ_RAG_PROJECT_ID", default_value=project_id)
     rag_dataset_id = get_env_var("BQ_RAG_DATASET_ID")
 
@@ -80,7 +80,7 @@ def update_database_settings():
     
     if not metadata_rag_corpus_id:
         logger.warning(
-            "BQ_METADATA_RAG_CORPUS_ID is not set. RAG-based schema retrieval will not be available."
+            "BQ_METADATA_RAG_TABLE_ID is not set. RAG-based schema retrieval will not be available."
         )
     
     # The ddl_overview is updated to reflect column-level RAG
@@ -94,7 +94,7 @@ def update_database_settings():
     database_settings = {
         "bq_project_id": project_id,
         "bq_dataset_ids": dataset_ids, # List of dataset IDs
-        "bq_metadata_rag_corpus_id": metadata_rag_corpus_id, # Central RAG corpus for schema
+        "BQ_METADATA_RAG_TABLE_ID": metadata_rag_corpus_id, # Central RAG corpus for schema
         "bq_rag_project_id": rag_project_id, # Project ID where RAG dataset is stored
         "bq_rag_dataset_id": rag_dataset_id, # Dataset ID where schema embeddings are stored
         "bq_ddl_schema": ddl_overview, # Overview or placeholder
@@ -107,7 +107,7 @@ def get_bigquery_schema(
     client: bigquery.Client = None, 
     project_id: str = None, 
     question: str = None, 
-    rag_corpus_id: str = None, # This is BQ_METADATA_RAG_CORPUS_ID
+    rag_corpus_id: str = None, # This is BQ_METADATA_RAG_TABLE_ID
     target_dataset_ids: list[str] = None,
     top_k_columns_for_rag: int = 10, # New parameter for configurability
     rag_project_id: str = None # New parameter for RAG project ID
@@ -131,7 +131,7 @@ def get_bigquery_schema(
     
     # Resolve RAG corpus ID
     resolved_rag_corpus_id = rag_corpus_id if rag_corpus_id is not None else (
-        db_settings.get("bq_metadata_rag_corpus_id") if db_settings else BQ_METADATA_RAG_CORPUS_ID
+        db_settings.get("BQ_METADATA_RAG_TABLE_ID") if db_settings else BQ_METADATA_RAG_TABLE_ID
     )
 
     if question and resolved_rag_project_id and resolved_rag_corpus_id:
@@ -247,7 +247,7 @@ The database structure is defined by the following table schemas (possibly with 
 
     nl2sql_method = os.getenv("NL2SQL_METHOD", "BASELINE")
     current_db_settings = get_database_settings()
-    metadata_rag_corpus_id_for_nl2sql = current_db_settings.get("bq_metadata_rag_corpus_id", BQ_METADATA_RAG_CORPUS_ID)
+    metadata_rag_corpus_id_for_nl2sql = current_db_settings.get("BQ_METADATA_RAG_TABLE_ID", BQ_METADATA_RAG_TABLE_ID)
     project_id_for_nl2sql = current_db_settings.get("bq_project_id")
 
     # Always try to use RAG if question and corpus ID are available, regardless of NL2SQL_METHOD

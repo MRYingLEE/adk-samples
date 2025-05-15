@@ -80,7 +80,7 @@ def get_relevant_schema_from_embeddings(
     question_embedding = get_column_embeddings([question])[0]
 
     if not rag_corpus_id:
-        print("Error: BQ_METADATA_RAG_CORPUS_ID is not set. Cannot query schema embeddings.")
+        print("Error: BQ_METADATA_RAG_TABLE_ID is not set. Cannot query schema embeddings.")
         return "-- ERROR: RAG Corpus ID not configured. --"
 
     if not project_id:
@@ -126,7 +126,7 @@ def get_relevant_schema_from_embeddings(
     # ... (rest of the function for querying BigQuery and formatting results)
 # ...
 ```
-The `BQ_METADATA_RAG_CORPUS_ID` environment variable is crucial here, as it points to the BigQuery table (e.g., `my_dataset.my_column_embeddings_table`) that serves as the RAG corpus.
+The `BQ_METADATA_RAG_TABLE_ID` environment variable is crucial here, as it points to the BigQuery table (e.g., `my_dataset.my_column_embeddings_table`) that serves as the RAG corpus.
 
 ### 3. Integration into BigQuery Tools
 
@@ -137,7 +137,7 @@ The RAG functionality is integrated into the `get_bigquery_schema` function with
 # ...
 from data_science.utils.schema_rag import get_relevant_schema_from_embeddings as get_relevant_schema_via_rag
 # ...
-# BQ_METADATA_RAG_CORPUS_ID is fetched within update_database_settings
+# BQ_METADATA_RAG_TABLE_ID is fetched within update_database_settings
 # ...
 def get_bigquery_schema(
     client=None,
@@ -151,7 +151,7 @@ def get_bigquery_schema(
     Retrieves schema. If a question is provided, it uses RAG to get column-level details.
     Otherwise, if target_dataset_ids are provided, it gets all tables for those.
     """
-    rag_corpus_id = database_settings.get("bq_metadata_rag_corpus_id") if database_settings else None
+    rag_corpus_id = database_settings.get("BQ_METADATA_RAG_TABLE_ID") if database_settings else None
 
     if question and project_id and rag_corpus_id and client: # Ensure client is available
         print(f"Retrieving schema relevant to the question using RAG corpus: {rag_corpus_id}...")
@@ -171,7 +171,7 @@ def get_bigquery_schema(
 
 ### 4. Configuration
 
-The RAG system relies on environment variables for configuration, particularly `BQ_PROJECT_ID`, `BQ_DATASET_IDS`, and `BQ_METADATA_RAG_CORPUS_ID`. These are managed in `update_database_settings` within `agents/data-science/data_science/sub_agents/bigquery/tools.py`.
+The RAG system relies on environment variables for configuration, particularly `BQ_PROJECT_ID`, `BQ_DATASET_IDS`, and `BQ_METADATA_RAG_TABLE_ID`. These are managed in `update_database_settings` within `agents/data-science/data_science/sub_agents/bigquery/tools.py`.
 
 ```python
 # File: agents/data-science/data_science/sub_agents/bigquery/tools.py
@@ -182,12 +182,12 @@ def update_database_settings():
     
     project_id = get_env_var("BQ_PROJECT_ID")
     dataset_ids_str = get_env_var("BQ_DATASET_IDS")
-    metadata_rag_corpus_id = get_env_var("BQ_METADATA_RAG_CORPUS_ID")
+    metadata_rag_corpus_id = get_env_var("BQ_METADATA_RAG_TABLE_ID")
 
     if not dataset_ids_str:
         raise ValueError("BQ_DATASET_IDS environment variable is not set.")
     if not metadata_rag_corpus_id:
-        print("Warning: BQ_METADATA_RAG_CORPUS_ID is not set. RAG-based schema retrieval will be limited.")
+        print("Warning: BQ_METADATA_RAG_TABLE_ID is not set. RAG-based schema retrieval will be limited.")
     
     dataset_ids = [ds_id.strip() for ds_id in dataset_ids_str.split(',')]
 
@@ -197,7 +197,7 @@ def update_database_settings():
     database_settings = {
         "bq_project_id": project_id,
         "bq_dataset_ids": dataset_ids, # List of dataset IDs
-        "bq_metadata_rag_corpus_id": metadata_rag_corpus_id, # Central RAG corpus for schema
+        "BQ_METADATA_RAG_TABLE_ID": metadata_rag_corpus_id, # Central RAG corpus for schema
         "bq_ddl_schema": ddl_overview, # Overview or placeholder
         **chase_constants.chase_sql_constants_dict,
     }

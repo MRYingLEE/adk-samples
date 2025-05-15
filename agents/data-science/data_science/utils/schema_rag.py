@@ -86,7 +86,7 @@ def get_relevant_schema_from_embeddings(
     question_embedding = get_column_embeddings([question])[0]
 
     if not rag_corpus_id:
-        print("Error: BQ_METADATA_RAG_CORPUS_ID is not set. Cannot query schema embeddings.")
+        print("Error: BQ_METADATA_RAG_TABLE_ID is not set. Cannot query schema embeddings.")
         return "-- ERROR: RAG Corpus ID not configured. --"
 
     if not project_id:
