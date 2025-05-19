@@ -56,7 +56,7 @@ def get_relevant_schema_from_embeddings(
     project_id: str,
     rag_corpus_id: str,
     bq_client: bigquery.Client,
-    top_k_columns: int = 10,
+    top_k_columns: int = 100,
     location: str = None
 ) -> str:
     """
