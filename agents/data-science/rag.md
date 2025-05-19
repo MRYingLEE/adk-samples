@@ -145,7 +145,7 @@ def get_bigquery_schema(
     question: str = None,
     # rag_corpus_id is now fetched from database_settings
     target_dataset_ids: list[str] = None,
-    top_k_columns: int = 10 # Added for RAG
+    top_k_columns: int = 100 # Added for RAG
     ):
     """
     Retrieves schema. If a question is provided, it uses RAG to get column-level details.
