@@ -20,7 +20,7 @@ BQ_PROJECT_ID='esg-satelite'
 # Format: project1.dataset1,project2.dataset2,dataset3 (if no project specified, BQ_PROJECT_ID is used)
 BQ_DATASET_IDS='esg-satelite.forecasting_sticker_sales,bigquery-public-data.google_patents_research'
 # RAG Corpus ID containing metadata (schemas, descriptions) for ALL datasets listed in BQ_DATASET_IDS
-BQ_METADATA_RAG_CORPUS_ID='rag_on_columns.schema_embeddings'
+BQ_METADATA_RAG_TABLE_ID='rag_on_columns.schema_embeddings'
 BQ_LOCATION='US'
 
 # Set up RAG Corpus for BQML Agent 
