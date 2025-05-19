@@ -5,7 +5,7 @@
 GOOGLE_GENAI_USE_VERTEXAI=1
 
 # ML Dev backend config. Fill if using Ml Dev backend.
-GOOGLE_API_KEY='AIzaSyAWu1APIDFDLraJUR6ZmvU86bom9iGl7zQ'
+GOOGLE_API_KEY='XXXXX'
 
 # Vertex backend config
 GOOGLE_CLOUD_PROJECT='esg-satelite'
